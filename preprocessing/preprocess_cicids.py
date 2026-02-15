@@ -6,19 +6,17 @@ from sklearn.preprocessing import StandardScaler
 
 def load_clean_cicids():
     """
-    Load frozen cleaned CICIDS2017 dataset.
-    Path is resolved dynamically relative to project root.
+    Load enhanced CICIDS2017 dataset.
     """
 
-    # Get project root directory
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # Construct dataset path
+    # 🔥 Use enhanced dataset
     data_path = os.path.join(
         BASE_DIR,
         "data",
         "processed",
-        "cicids2017_clean.csv"
+        "cicids2017_enhanced.csv"
     )
 
     print("Loading from:", data_path)
@@ -27,6 +25,13 @@ def load_clean_cicids():
         raise FileNotFoundError(f"Dataset not found at {data_path}")
 
     df = pd.read_csv(data_path)
+
+    # Safety cleanup (in case)
+    df.replace([float("inf"), float("-inf")], 0, inplace=True)
+    df.fillna(0, inplace=True)
+
+    print("Dataset shape:", df.shape)
+
     return df
 
 
