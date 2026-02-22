@@ -1,0 +1,7 @@
+ae_stage1_loao_roc_auc_mean3.py → rename to stage1_autoencoder_roc.py
+
+rf_stage2_supervised_evaluation.py → rename to stage2_rf_supervised.py
+
+hybrid_optionB_fullgpu_stats.py → rename to hybrid_loao_final.py
+
+hybrid_optionB_deployment_metrics.py → rename to deployment_metrics.py
