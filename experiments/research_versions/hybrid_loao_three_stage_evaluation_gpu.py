@@ -221,56 +221,98 @@ for ZERO_DAY in ATTACKS:
     print("* DAE catches zero-day but causes false positives.\n")
 
     # =====================================================
-    # TEST 3 — HYBRID GATEKEEPER (CONFIDENCE-BASED)
+    # 3-STAGE EVALUATION & DIAGNOSTICS
     # =====================================================
 
-    print("[TEST 3] HYBRID GATEKEEPER (Confidence-Based Override)")
+    from sklearn.metrics import recall_score, f1_score
 
-    # 1. Get the probability scores from the RF, not just the hard labels
+    eval_df = pd.concat([
+        train_df.sample(60000, random_state=seed),
+        test_zero_df.sample(min(10000, len(test_zero_df)), random_state=seed)
+    ])
+
+    X_eval = scaler.transform(eval_df.drop("Label", axis=1))
+    y_eval = eval_df["Label"].values
+
+    X_eval_tensor = torch.tensor(X_eval, dtype=torch.float32)
+
+    residual_list = []
+    with torch.no_grad():
+        for i in range(0, len(X_eval_tensor), 4096):
+            x = X_eval_tensor[i:i+4096].to(device)
+            recon, _ = model(x)
+            residual_list.append(torch.mean((recon - x)**2, dim=1).cpu())
+
+    residual_eval = torch.cat(residual_list).numpy()
+    
+    # Append residual for the RF
+    X_eval_rf = np.hstack([X_eval, residual_eval.reshape(-1, 1)])
+
+    # Get hard predictions and probability scores from RF
+    rf_preds = rf.predict(X_eval_rf)
     rf_probs = rf.predict_proba(X_eval_rf)
+
+    # -----------------------------------------------------
+    # STAGE 1 & 2 (Quick Calculation)
+    # -----------------------------------------------------
+    dae_preds = np.where(residual_eval > threshold, "ZERO_DAY", "BENIGN")
+    
+    print(f"\n[TEST 1] PURE RF Zero-Day Recall : {round(recall_score(y_eval == ZERO_DAY, rf_preds == ZERO_DAY), 4)}")
+    print(f"[TEST 2] PURE DAE Zero-Day Recall: {round(recall_score(y_eval == ZERO_DAY, dae_preds == 'ZERO_DAY'), 4)}")
+    print(f"[TEST 2] PURE DAE Benign Recall  : {round(recall_score(y_eval == 'BENIGN', dae_preds == 'BENIGN'), 4)}")
+
+    # -----------------------------------------------------
+    # STAGE 3: HYBRID GATEKEEPER WITH DIAGNOSTICS
+    # -----------------------------------------------------
+    print("\n[TEST 3] HYBRID GATEKEEPER (Confidence Threshold = 0.90)")
     
     hybrid_preds = []
+    diagnostic_logs = [] # To store the 5-line diagnostic
 
     for i in range(len(X_eval)):
+        max_rf_conf = np.max(rf_probs[i])
         
-        # Find the RF's highest confidence score for this specific packet
-        max_rf_confidence = np.max(rf_probs[i])
-
-        # CONDITION A: The DAE flags an anomaly
+        # CONDITION A: DAE Flags Anomaly (Residual > Threshold)
         if residual_eval[i] > threshold:
             
-            # The Gatekeeper Check: Is the RF highly confident?
-            if max_rf_confidence >= 0.70:
-                # The RF is very certain. It's either definitely BENIGN or a KNOWN ATTACK.
-                # We trust the RF and rescue the packet.
-                hybrid_preds.append(rf_preds[i])
+            if rf_preds[i] == "BENIGN":
+                # ASYMMETRIC TRUST: The RF claims it's normal, but DAE disagrees.
+                # We demand near-absolute perfection (99%) to let the RF override.
+                if max_rf_conf >= 0.99:
+                    hybrid_preds.append("BENIGN")
+                else:
+                    hybrid_preds.append("ZERO_DAY")
             else:
-                # The RF is guessing with low confidence (< 70%).
-                # Since the DAE is screaming anomaly, this is a true unknown.
-                hybrid_preds.append("ZERO_DAY")
+                # The RF predicts a KNOWN ATTACK.
+                # Since the DAE also flagged an anomaly, we trust the RF's specific label.
+                hybrid_preds.append(rf_preds[i])
                 
-        # CONDITION B: The DAE says it's normal traffic
+        # CONDITION B: DAE Says Normal (Residual <= Threshold)
         else:
-            # Trust the RF to handle normal routing
+            # Trust the RF for normal routing and low-residual known attacks
             hybrid_preds.append(rf_preds[i])
+
+        # =================================================
+        # THE DIAGNOSTIC TRACKER
+        # =================================================
+        if y_eval[i] == ZERO_DAY and hybrid_preds[-1] != "ZERO_DAY":
+            if len(diagnostic_logs) < 5:
+                diagnostic_logs.append(
+                    f"  -> RF Guessed: '{rf_preds[i]}' | Confidence: {max_rf_conf*100:.1f}% | DAE Residual: {residual_eval[i]:.6f}"
+                )
 
     hybrid_preds = np.array(hybrid_preds)
 
-    benign_recall_h = recall_score(
-        y_eval == "BENIGN",
-        hybrid_preds == "BENIGN"
-    )
+    benign_recall_h = recall_score(y_eval == "BENIGN", hybrid_preds == "BENIGN")
+    zero_recall_h = recall_score(y_eval == ZERO_DAY, hybrid_preds == "ZERO_DAY")
+    hybrid_f1 = f1_score((y_eval == ZERO_DAY).astype(int), (hybrid_preds == "ZERO_DAY").astype(int))
 
-    zero_recall_h = recall_score(
-        y_eval == ZERO_DAY,
-        hybrid_preds == "ZERO_DAY"
-    )
-
-    print("- Benign Recall :", round(benign_recall_h, 4))
-    print(f"- Zero-Day ({ZERO_DAY}) Recall :", round(zero_recall_h, 4))
-    print("- Overall F1 :", round(
-        f1_score((y_eval == ZERO_DAY).astype(int),
-                 (hybrid_preds == "ZERO_DAY").astype(int)), 4))
-    print("* Confidence-based hybrid filters out DAE false positives.\n")
-
+    print(f"- Benign Recall : {round(benign_recall_h, 4)}")
+    print(f"- Zero-Day Rec  : {round(zero_recall_h, 4)}")
+    print(f"- Overall F1    : {round(hybrid_f1, 4)}")
+    
+    if len(diagnostic_logs) > 0:
+        print("\n[DIAGNOSTIC] Why did we miss the Zero-Day?")
+        for log in diagnostic_logs:
+            print(log)
     print("="*70)
