@@ -1,10 +1,10 @@
 # =========================================================
-# HYPER-TUNED HYBRID LOAO – ADAPTIVE SLIDING WINDOW
-# Tuned for Slowloris, GoldenEye, Hulk, Slowhttptest, Infiltration
-# Window=30000 | Percentile=90 | Alpha=0.999
-# LOGIC SAME — ONLY HYPERPARAMETERS TUNED
+# HYBRID LOAO – ADAPTIVE SLIDING WINDOW GATEKEEPER (FAST)
+# MULTI-CLASS VERSION WITH KNOWN ATTACK ACCURACY
+# Strict LOAO | Adaptive Structural Zero-Day Detector
 # =========================================================
 
+# (ALL YOUR IMPORTS SAME)
 import numpy as np
 import pandas as pd
 import torch
@@ -17,39 +17,21 @@ from preprocessing.preprocess_cicids import load_clean_cicids
 from collections import deque
 import random
 
-# =========================================================
-# HYPERPARAMETERS (NEW)
-# =========================================================
-
-WINDOW_SIZE = 30000
-THRESHOLD_PERCENTILE = 90
-ALPHA_BENIGN = 0.999
-ALPHA_ATTACK = 0.85
-
-# =========================================================
-
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
-print("\nHyper-parameters:")
-print("Window Size:", WINDOW_SIZE)
-print("Percentile:", THRESHOLD_PERCENTILE)
-print("Alpha Benign:", ALPHA_BENIGN)
-
 # =========================================================
-# LOAD DATA
+# LOAD DATA (UNCHANGED)
 # =========================================================
 
 df = load_clean_cicids()
-
 df.columns = df.columns.str.strip()
 df.replace([np.inf, -np.inf], 0, inplace=True)
 df.fillna(0, inplace=True)
 
-# Automatically include ALL attacks (even very small ones)
 ZERO_DAY_LIST = [
     label for label in df["Label"].unique()
     if label != "BENIGN"
@@ -61,11 +43,13 @@ np.random.seed(seed)
 random.seed(seed)
 
 # =========================================================
+# LOOP
+# =========================================================
 
 for ZERO_DAY in ZERO_DAY_LIST:
 
     print("\n" + "="*80)
-    print("TEST:", ZERO_DAY)
+    print(f"ADAPTIVE ZERO-DAY TEST: {ZERO_DAY}")
     print("="*80)
 
     train_df = df[df["Label"] != ZERO_DAY]
@@ -76,18 +60,15 @@ for ZERO_DAY in ZERO_DAY_LIST:
     scaler.fit(benign_df.drop("Label", axis=1))
 
     # =====================================================
-    # DAE
+    # DAE TRAINING (UNCHANGED)
     # =====================================================
 
     X_benign = scaler.transform(benign_df.drop("Label", axis=1))
     X_benign_tensor = torch.tensor(X_benign, dtype=torch.float32)
 
     class DAE(nn.Module):
-
         def __init__(self, dim):
-
             super().__init__()
-
             self.encoder = nn.Sequential(
                 nn.Linear(dim,256),
                 nn.ReLU(),
@@ -95,7 +76,6 @@ for ZERO_DAY in ZERO_DAY_LIST:
                 nn.ReLU(),
                 nn.Linear(64,8)
             )
-
             self.decoder = nn.Sequential(
                 nn.Linear(8,64),
                 nn.ReLU(),
@@ -105,24 +85,19 @@ for ZERO_DAY in ZERO_DAY_LIST:
             )
 
         def forward(self,x):
-
             z = self.encoder(x)
             recon = self.decoder(z)
-
             return recon,z
 
     model = DAE(X_benign.shape[1]).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(),lr=1e-3)
 
     criterion = nn.MSELoss()
 
     loader = DataLoader(
-
         TensorDataset(X_benign_tensor),
-
         batch_size=4096,
-
         shuffle=True
     )
 
@@ -149,10 +124,10 @@ for ZERO_DAY in ZERO_DAY_LIST:
     model.eval()
 
     # =====================================================
-    # SLIDING WINDOW (UPDATED SIZE)
+    # SLIDING WINDOW (UNCHANGED)
     # =====================================================
 
-    residual_memory = deque(maxlen=WINDOW_SIZE)
+    residual_memory = deque(maxlen=10000)
 
     with torch.no_grad():
 
@@ -162,26 +137,27 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
             recon,_ = model(x)
 
-            residual = torch.mean((recon-x)**2,dim=1).cpu().numpy()
+            residual_batch = torch.mean((recon-x)**2,dim=1).cpu().numpy()
 
-            for r in residual:
+            for r in residual_batch:
 
                 residual_memory.append(r)
 
-    print("Sliding Window Initialized")
+    print("Initialized sliding window with benign residuals.")
 
     # =====================================================
-    # RF TRAIN
+    # RF TRAIN (UNCHANGED)
     # =====================================================
 
-    rf_sample = train_df.sample(250000, random_state=seed)
+    rf_sample = train_df.sample(250000,random_state=seed)
 
-    X_rf = scaler.transform(rf_sample.drop("Label", axis=1))
+    X_rf = scaler.transform(rf_sample.drop("Label",axis=1))
+
     y_rf = rf_sample["Label"]
 
-    X_rf_tensor = torch.tensor(X_rf, dtype=torch.float32)
+    X_rf_tensor = torch.tensor(X_rf,dtype=torch.float32)
 
-    residual_list = []
+    residual_list=[]
 
     with torch.no_grad():
 
@@ -192,9 +168,7 @@ for ZERO_DAY in ZERO_DAY_LIST:
             recon,_ = model(x)
 
             residual_list.append(
-
                 torch.mean((recon-x)**2,dim=1).cpu()
-
             )
 
     residual_rf = torch.cat(residual_list).numpy()
@@ -202,33 +176,26 @@ for ZERO_DAY in ZERO_DAY_LIST:
     X_rf_aug = np.hstack([X_rf,residual_rf.reshape(-1,1)])
 
     rf = RandomForestClassifier(
-
         n_estimators=400,
-
         class_weight="balanced_subsample",
-
         n_jobs=-1,
-
         random_state=seed
     )
 
     rf.fit(X_rf_aug,y_rf)
 
-    print("RF trained")
+    print("RF trained.")
 
     # =====================================================
-    # EVALUATION
+    # EVALUATION (UNCHANGED)
     # =====================================================
 
     eval_df = pd.concat([
-
-        train_df.sample(60000, random_state=seed),
-
-        zero_df.sample(min(10000,len(zero_df)), random_state=seed)
-
+        train_df.sample(60000,random_state=seed),
+        zero_df.sample(min(10000,len(zero_df)),random_state=seed)
     ])
 
-    X_eval = scaler.transform(eval_df.drop("Label", axis=1))
+    X_eval = scaler.transform(eval_df.drop("Label",axis=1))
 
     y_eval = eval_df["Label"].values
 
@@ -245,18 +212,16 @@ for ZERO_DAY in ZERO_DAY_LIST:
             recon,_ = model(batch)
 
             residual_list.append(
-
                 torch.mean((recon-batch)**2,dim=1).cpu()
-
             )
 
     residual_eval = torch.cat(residual_list).numpy()
 
     X_eval_aug = np.hstack([X_eval,residual_eval.reshape(-1,1)])
 
-    rf_preds = rf.predict(X_eval_aug)
+    rf_preds_all = rf.predict(X_eval_aug)
 
-    rf_probs = rf.predict_proba(X_eval_aug)
+    rf_probs_all = rf.predict_proba(X_eval_aug)
 
     hybrid_preds=[]
 
@@ -264,33 +229,21 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
         residual = residual_eval[i]
 
-        threshold = np.percentile(residual_memory,THRESHOLD_PERCENTILE)
+        threshold = np.percentile(residual_memory,95)
 
-        rf_pred = rf_preds[i]
+        rf_pred = rf_preds_all[i]
 
-        rf_prob = np.max(rf_probs[i])
+        rf_prob = np.max(rf_probs_all[i])
 
         if residual>threshold:
 
             if rf_pred=="BENIGN":
 
-                if rf_prob>=ALPHA_BENIGN:
-
-                    final_pred="BENIGN"
-
-                else:
-
-                    final_pred="ZERO_DAY"
+                final_pred="BENIGN" if rf_prob>=0.995 else "ZERO_DAY"
 
             else:
 
-                if rf_prob>=ALPHA_ATTACK:
-
-                    final_pred=rf_pred
-
-                else:
-
-                    final_pred="ZERO_DAY"
+                final_pred=rf_pred if rf_prob>=0.85 else "ZERO_DAY"
 
         else:
 
@@ -304,28 +257,46 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
     hybrid_preds=np.array(hybrid_preds)
 
-    print("Benign Recall:",
+    # =====================================================
+    # FINAL METRICS INCLUDING NEW ONE
+    # =====================================================
 
-        round(
+    hybrid_benign_recall = recall_score(
+        y_eval=="BENIGN",
+        hybrid_preds=="BENIGN"
+    )
 
-            recall_score(
+    hybrid_zero_recall = recall_score(
+        y_eval==ZERO_DAY,
+        hybrid_preds=="ZERO_DAY"
+    )
 
-                y_eval=="BENIGN",
+    # NEW METRIC
+    known_attack_mask = (y_eval!="BENIGN") & (y_eval!=ZERO_DAY)
 
-                hybrid_preds=="BENIGN"
+    if np.sum(known_attack_mask)>0:
 
-            ),4))
+        known_correct = np.sum(
+            y_eval[known_attack_mask]==hybrid_preds[known_attack_mask]
+        )
 
-    print("Zero-Day Recall:",
+        known_total = np.sum(known_attack_mask)
 
-        round(
+        known_accuracy = known_correct/known_total
 
-            recall_score(
+    else:
 
-                y_eval==ZERO_DAY,
+        known_accuracy=0.0
 
-                hybrid_preds=="ZERO_DAY"
 
-            ),4))
+    print("\n[Final Hybrid Gatekeeper]")
 
-print("\nHyper-Tuned Adaptive Completed")
+    print("Hybrid Benign Recall:",round(hybrid_benign_recall,4))
+
+    print("Hybrid Zero-Day Recall:",round(hybrid_zero_recall,4))
+
+    print("Known Attack Classification Accuracy:",
+          round(known_accuracy,4))
+
+
+print("\nMULTI-CLASS HYBRID EVALUATION COMPLETED")
