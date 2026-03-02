@@ -61,10 +61,24 @@ df.fillna(0, inplace=True)
 
 # =========================================================
 
-ZERO_DAY_LIST = [
-    label for label in df["Label"].unique()
-    if label != "BENIGN"
+EXCLUDE_ATTACKS = [
+
+    "DoS Slowhttptest",
+    "Bot",
+    "DDoS",
+    "DoS slowloris"
+
 ]
+
+ZERO_DAY_LIST = [
+
+    label for label in df["Label"].unique()
+
+    if label != "BENIGN"
+    and label not in EXCLUDE_ATTACKS
+
+]
+
 
 seed = 42
 

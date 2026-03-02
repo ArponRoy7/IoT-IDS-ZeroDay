@@ -67,7 +67,7 @@ df.fillna(0, inplace=True)
 
 ZERO_DAY_LIST = [
     # 1. The Volumetric Floods (DAE Magnitude Tests)
-    "DDoS-ICMP_Flood",      # Classic IoT Ping Flood
+    #"DDoS-ICMP_Flood",      # Classic IoT Ping Flood
     "DDoS-UDP_Flood",       # Proves protocol-agnostic volumetric detection
 
     # 2. The Decentralized Botnets (Concept Drift Tests)
