@@ -1,12 +1,13 @@
 # =========================================================
-# HIGH-CAPACITY DUAL-RESIDUAL ADAPTIVE HYBRID
-# HARDWARE ACCELERATED (AMP + VRAM CACHE + OPTIMIZED LOOP)
+# HIGH-CAPACITY DUAL-RESIDUAL ADAPTIVE HYBRID (CICIDS2017)
+# CPU VERSION — DAE TRAINED ONCE + RF=350 + BEST MODEL SAVE
 # =========================================================
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import copy  # Added for saving best model state
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
@@ -16,7 +17,7 @@ from collections import deque
 import random
 
 # =========================================================
-# HIGH CAPACITY PARAMETERS (MICRO-TUNED)
+# PARAMETERS
 # =========================================================
 
 WINDOW_SIZE = 100000
@@ -25,13 +26,10 @@ ALPHA_BENIGN = 0.999
 ALPHA_ATTACK = 0.85
 
 EPOCHS = 35
-RF_SAMPLE_SIZE = None   # FULL training data
-BATCH_SIZE = 4096       # Optimal for sharp gradient descent
-EXCLUDE_ATTACKS = []    # Prevent NameError
+BATCH_SIZE = 4096
+EXCLUDE_ATTACKS = []
 
-# =========================================================
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 print("Using device:", device)
 
 # =========================================================
@@ -40,7 +38,6 @@ print("Using device:", device)
 
 df = load_clean_cicids()
 
-# Memory optimization
 for col in df.select_dtypes(include=["float64"]).columns:
     df[col] = df[col].astype("float32")
 
@@ -50,8 +47,6 @@ for col in df.select_dtypes(include=["int64"]).columns:
 df.columns = df.columns.str.strip()
 df.replace([np.inf, -np.inf], 0, inplace=True)
 df.fillna(0, inplace=True)
-
-# =========================================================
 
 ZERO_DAY_LIST = [
     label for label in df["Label"].unique()
@@ -64,6 +59,94 @@ np.random.seed(seed)
 random.seed(seed)
 
 # =========================================================
+# ===== TRAIN DAE ONCE USING ALL BENIGN DATA ============
+# =========================================================
+
+benign_full = df[df["Label"] == "BENIGN"]
+
+scaler = StandardScaler()
+scaler.fit(benign_full.drop("Label", axis=1))
+X_benign = scaler.transform(benign_full.drop("Label", axis=1))
+X_benign_tensor = torch.tensor(X_benign, dtype=torch.float32).to(device)
+
+class DAE(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 8)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(8, 64),
+            nn.ReLU(),
+            nn.Linear(64, 256),
+            nn.ReLU(),
+            nn.Linear(256, dim)
+        )
+
+    def forward(self, x):
+        z = self.encoder(x)
+        recon = self.decoder(z)
+        return recon, z
+
+model = DAE(X_benign.shape[1]).to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+criterion = nn.MSELoss()
+
+loader = DataLoader(
+    TensorDataset(X_benign_tensor),
+    batch_size=BATCH_SIZE,
+    shuffle=True
+)
+
+print("Training DAE (once)...")
+model.train()
+
+prev_loss = float("inf")
+best_loss = float("inf")
+best_model_state = None
+
+for epoch in range(EPOCHS):
+    total_loss = 0
+
+    for (x,) in loader:
+        noise = torch.randn_like(x) * 0.05
+        optimizer.zero_grad()
+        recon, _ = model(x + noise)
+        loss = criterion(recon, x)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    print("Epoch", epoch + 1, "Loss:", round(total_loss, 4))
+
+    # 🚀 SAVE BEST MODEL LOGIC
+    # Always keep a copy of the model with the lowest loss seen so far
+    if total_loss < best_loss:
+        best_loss = total_loss
+        best_model_state = copy.deepcopy(model.state_dict())
+
+    # Early stopping
+    if epoch > 5 and abs(prev_loss - total_loss) < 1e-4:
+        print("Early stopping triggered")
+        break
+
+    prev_loss = total_loss
+
+# 🚀 RELOAD BEST MODEL
+# This ensures we use the stable version (e.g., Epoch 32) even if Epoch 35 spiked
+if best_model_state is not None:
+    model.load_state_dict(best_model_state)
+    print(f"Loaded best model state with Loss: {round(best_loss, 4)}")
+
+model.eval()
+
+# =========================================================
+# ================= ZERO DAY LOOP =========================
+# =========================================================
 
 for ZERO_DAY in ZERO_DAY_LIST:
 
@@ -74,89 +157,6 @@ for ZERO_DAY in ZERO_DAY_LIST:
     train_df = df[df["Label"] != ZERO_DAY]
     zero_df = df[df["Label"] == ZERO_DAY]
     benign_df = train_df[train_df["Label"] == "BENIGN"]
-
-    # =====================================================
-    # SCALER
-    # =====================================================
-
-    scaler = StandardScaler()
-    scaler.fit(benign_df.drop("Label", axis=1))
-    X_benign = scaler.transform(benign_df.drop("Label", axis=1))
-
-    # 🚀 SPEED HACK 1: Move entire dataset to GPU VRAM immediately
-    X_benign_tensor = torch.tensor(X_benign, dtype=torch.float32).to(device)
-
-    # =====================================================
-    # DAE MODEL
-    # =====================================================
-
-    class DAE(nn.Module):
-        def __init__(self, dim):
-            super().__init__()
-            self.encoder = nn.Sequential(
-                nn.Linear(dim, 256),
-                nn.ReLU(),
-                nn.Linear(256, 64),
-                nn.ReLU(),
-                nn.Linear(64, 8)
-            )
-            self.decoder = nn.Sequential(
-                nn.Linear(8, 64),
-                nn.ReLU(),
-                nn.Linear(64, 256),
-                nn.ReLU(),
-                nn.Linear(256, dim)
-            )
-
-        def forward(self, x):
-            z = self.encoder(x)
-            recon = self.decoder(z)
-            return recon, z
-
-    model = DAE(X_benign.shape[1]).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
-
-    # DataLoader now slices directly on GPU
-    loader = DataLoader(
-        TensorDataset(X_benign_tensor),
-        batch_size=BATCH_SIZE,
-        shuffle=True
-    )
-
-    # =====================================================
-    # TRAIN DAE (WITH AMP)
-    # =====================================================
-
-    print("Training DAE...")
-    model.train()
-    
-    # 🚀 SPEED HACK 2: Automatic Mixed Precision (AMP)
-    scaler_amp = torch.cuda.amp.GradScaler() 
-
-    for epoch in range(EPOCHS):
-        total_loss = 0
-        for (x,) in loader:
-            # x is already on device
-            noise = torch.randn_like(x) * 0.05
-            
-            optimizer.zero_grad()
-            
-            # Forward pass in 16-bit math
-            with torch.cuda.amp.autocast():
-                recon, _ = model(x + noise)
-                loss = criterion(recon, x)
-
-            # Backward pass via AMP
-            scaler_amp.scale(loss).backward()
-            scaler_amp.step(optimizer)
-            scaler_amp.update()
-
-            total_loss += loss.item()
-
-        print("Epoch", epoch + 1, "Loss:", round(total_loss, 4))
-
-    model.eval()
 
     # =====================================================
     # SLIDING WINDOW INITIALIZATION
@@ -173,14 +173,13 @@ for ZERO_DAY in ZERO_DAY_LIST:
     print("Sliding Window Initialized")
 
     # =====================================================
-    # RF TRAIN FULL DATA
+    # RF TRAIN
     # =====================================================
 
     print("Training RF...")
 
-    rf_sample = train_df
-    X_rf = scaler.transform(rf_sample.drop("Label", axis=1))
-    y_rf = rf_sample["Label"]
+    X_rf = scaler.transform(train_df.drop("Label", axis=1))
+    y_rf = train_df["Label"]
 
     X_rf_tensor = torch.tensor(X_rf, dtype=torch.float32).to(device)
     residual_list = []
@@ -193,7 +192,6 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
     residual_rf = torch.cat(residual_list).numpy()
 
-    # variance feature
     variance_rf = pd.Series(residual_rf).rolling(
         window=15, min_periods=1
     ).var().fillna(0).values
@@ -205,7 +203,7 @@ for ZERO_DAY in ZERO_DAY_LIST:
     ])
 
     rf = RandomForestClassifier(
-        n_estimators=500,       # 🚀 Tuned from 400 to 500
+        n_estimators=350,
         class_weight="balanced_subsample",
         n_jobs=-1,
         random_state=seed
@@ -215,7 +213,7 @@ for ZERO_DAY in ZERO_DAY_LIST:
     print("RF trained")
 
     # =====================================================
-    # FULL EVALUATION
+    # EVALUATION
     # =====================================================
 
     print("Running evaluation...")
@@ -239,7 +237,6 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
     residual_eval = torch.cat(residual_list).numpy()
 
-    # 🚀 FIXED: Variance window matched to 15
     variance_eval = pd.Series(residual_eval).rolling(
         window=15, min_periods=1
     ).var().fillna(0).values
@@ -255,17 +252,11 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
     hybrid_preds = []
 
-    # =====================================================
-    # OPTIMIZED HYBRID LOGIC
-    # =====================================================
-    
-    # 🚀 SPEED HACK 3: Calculate initial threshold outside the loop
     threshold = np.percentile(residual_memory, THRESHOLD_PERCENTILE)
 
     for i in range(len(X_eval)):
         residual = residual_eval[i]
 
-        # Recalculate threshold only every 1000 items to save massive CPU time
         if i > 0 and i % 1000 == 0:
             threshold = np.percentile(residual_memory, THRESHOLD_PERCENTILE)
 
@@ -297,4 +288,4 @@ for ZERO_DAY in ZERO_DAY_LIST:
         round(recall_score(y_eval == ZERO_DAY, hybrid_preds == "ZERO_DAY"), 4)
     )
 
-print("\nHIGH-CAPACITY Hardware-Accelerated Hybrid Completed")
+print("\nHIGH-CAPACITY Hybrid Completed")

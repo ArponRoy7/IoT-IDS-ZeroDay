@@ -1,16 +1,11 @@
 import pandas as pd
 
-df = pd.read_csv("data/processed/cicids2017_clean.csv")
+df = pd.read_csv(
+"/scratch/sm/Desktop/Arpon/IoT-IDS-ZeroDay/data/processed/ciciot2023_combined.csv"
+)
 
-print("\nShape:", df.shape)
+df.rename(columns={"label":"Label"}, inplace=True)
 
-print("\nFeature Count:", len(df.columns))
+df["Label"] = df["Label"].astype(str).str.upper()
 
-print("\nFeature Names:")
-print(df.columns.tolist())
-
-print("\nDataset Info:")
-print(df.info())
-
-print("\nAttack Distribution:")
-print(df.iloc[:,-1].value_counts())
+print(df["Label"].value_counts())
