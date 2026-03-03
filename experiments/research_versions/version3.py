@@ -1,13 +1,12 @@
 # =========================================================
-# HIGH-CAPACITY DUAL-RESIDUAL ADAPTIVE HYBRID (CICIDS2017)
-# CPU VERSION — DAE TRAINED ONCE + RF=350 + BEST MODEL SAVE
+# HIGH-CAPACITY DUAL-RESIDUAL ADAPTIVE HYBRID
+# DAE TRAINED ONCE + RF=350 + EARLY STOPPING
 # =========================================================
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import copy  # Added for saving best model state
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
@@ -106,8 +105,6 @@ print("Training DAE (once)...")
 model.train()
 
 prev_loss = float("inf")
-best_loss = float("inf")
-best_model_state = None
 
 for epoch in range(EPOCHS):
     total_loss = 0
@@ -123,24 +120,12 @@ for epoch in range(EPOCHS):
 
     print("Epoch", epoch + 1, "Loss:", round(total_loss, 4))
 
-    # 🚀 SAVE BEST MODEL LOGIC
-    # Always keep a copy of the model with the lowest loss seen so far
-    if total_loss < best_loss:
-        best_loss = total_loss
-        best_model_state = copy.deepcopy(model.state_dict())
-
     # Early stopping
     if epoch > 5 and abs(prev_loss - total_loss) < 1e-4:
         print("Early stopping triggered")
         break
 
     prev_loss = total_loss
-
-# 🚀 RELOAD BEST MODEL
-# This ensures we use the stable version (e.g., Epoch 32) even if Epoch 35 spiked
-if best_model_state is not None:
-    model.load_state_dict(best_model_state)
-    print(f"Loaded best model state with Loss: {round(best_loss, 4)}")
 
 model.eval()
 
