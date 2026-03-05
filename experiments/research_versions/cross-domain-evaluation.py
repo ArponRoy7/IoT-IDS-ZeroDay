@@ -27,7 +27,7 @@ ALPHA_ATTACK = 0.85
 EPOCHS = 35
 BATCH_SIZE = 4096
 seed = 42
-
+EXCLUDE_ATTACKS = []
 device = torch.device("cpu")
 torch.manual_seed(seed)
 np.random.seed(seed)
