@@ -28,7 +28,7 @@ EPOCHS = 35
 BATCH_SIZE = 4096
 EXCLUDE_ATTACKS = []
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 print("Using device:", device)
 
 # =========================================================
@@ -66,7 +66,8 @@ benign_full = df[df["Label"] == "BENIGN"]
 scaler = StandardScaler()
 scaler.fit(benign_full.drop("Label", axis=1))
 X_benign = scaler.transform(benign_full.drop("Label", axis=1))
-X_benign_tensor = torch.tensor(X_benign, dtype=torch.float32).to(device)
+
+X_benign_tensor = torch.tensor(X_benign, dtype=torch.float32)
 
 class DAE(nn.Module):
     def __init__(self, dim):
@@ -107,20 +108,27 @@ model.train()
 prev_loss = float("inf")
 
 for epoch in range(EPOCHS):
+
     total_loss = 0
 
     for (x,) in loader:
+        x = x.to(device)
         noise = torch.randn_like(x) * 0.05
+
         optimizer.zero_grad()
+
         recon, _ = model(x + noise)
+
         loss = criterion(recon, x)
+
         loss.backward()
+
         optimizer.step()
+
         total_loss += loss.item()
 
     print("Epoch", epoch + 1, "Loss:", round(total_loss, 4))
 
-    # Early stopping
     if epoch > 5 and abs(prev_loss - total_loss) < 1e-4:
         print("Early stopping triggered")
         break
@@ -151,8 +159,13 @@ for ZERO_DAY in ZERO_DAY_LIST:
 
     with torch.no_grad():
         for (x,) in loader:
+
+            x = x.to(device)
+
             recon, _ = model(x)
+
             residual = torch.mean((recon - x) ** 2, dim=1).cpu().numpy()
+
             residual_memory.extend(residual)
 
     print("Sliding Window Initialized")
@@ -164,21 +177,28 @@ for ZERO_DAY in ZERO_DAY_LIST:
     print("Training RF...")
 
     X_rf = scaler.transform(train_df.drop("Label", axis=1))
+
     y_rf = train_df["Label"]
 
-    X_rf_tensor = torch.tensor(X_rf, dtype=torch.float32).to(device)
+    X_rf_tensor = torch.tensor(X_rf, dtype=torch.float32)
+
     residual_list = []
 
     with torch.no_grad():
+
         for i in range(0, len(X_rf_tensor), BATCH_SIZE):
-            batch = X_rf_tensor[i:i+BATCH_SIZE]
+
+            batch = X_rf_tensor[i:i+BATCH_SIZE].to(device)
+
             recon, _ = model(batch)
+
             residual_list.append(torch.mean((recon - batch) ** 2, dim=1).cpu())
 
     residual_rf = torch.cat(residual_list).numpy()
 
     variance_rf = pd.Series(residual_rf).rolling(
-        window=15, min_periods=1
+        window=15,
+        min_periods=1
     ).var().fillna(0).values
 
     X_rf_aug = np.hstack([
@@ -195,6 +215,7 @@ for ZERO_DAY in ZERO_DAY_LIST:
     )
 
     rf.fit(X_rf_aug, y_rf)
+
     print("RF trained")
 
     # =====================================================
@@ -209,21 +230,28 @@ for ZERO_DAY in ZERO_DAY_LIST:
     ])
 
     X_eval = scaler.transform(eval_df.drop("Label", axis=1))
+
     y_eval = eval_df["Label"].values
-    X_eval_tensor = torch.tensor(X_eval, dtype=torch.float32).to(device)
+
+    X_eval_tensor = torch.tensor(X_eval, dtype=torch.float32)
 
     residual_list = []
 
     with torch.no_grad():
+
         for i in range(0, len(X_eval_tensor), BATCH_SIZE):
-            batch = X_eval_tensor[i:i+BATCH_SIZE]
+
+            batch = X_eval_tensor[i:i+BATCH_SIZE].to(device)
+
             recon, _ = model(batch)
+
             residual_list.append(torch.mean((recon - batch) ** 2, dim=1).cpu())
 
     residual_eval = torch.cat(residual_list).numpy()
 
     variance_eval = pd.Series(residual_eval).rolling(
-        window=15, min_periods=1
+        window=15,
+        min_periods=1
     ).var().fillna(0).values
 
     X_eval_aug = np.hstack([
@@ -233,6 +261,7 @@ for ZERO_DAY in ZERO_DAY_LIST:
     ])
 
     rf_preds = rf.predict(X_eval_aug)
+
     rf_probs = rf.predict_proba(X_eval_aug)
 
     hybrid_preds = []
@@ -240,25 +269,35 @@ for ZERO_DAY in ZERO_DAY_LIST:
     threshold = np.percentile(residual_memory, THRESHOLD_PERCENTILE)
 
     for i in range(len(X_eval)):
+
         residual = residual_eval[i]
 
         if i > 0 and i % 1000 == 0:
+
             threshold = np.percentile(residual_memory, THRESHOLD_PERCENTILE)
 
         rf_pred = rf_preds[i]
+
         rf_prob = np.max(rf_probs[i])
 
         if residual > threshold:
+
             if rf_pred == "BENIGN":
+
                 final_pred = "BENIGN" if rf_prob >= ALPHA_BENIGN else "ZERO_DAY"
+
             else:
+
                 final_pred = rf_pred if rf_prob >= ALPHA_ATTACK else "ZERO_DAY"
+
         else:
+
             final_pred = rf_pred
 
         hybrid_preds.append(final_pred)
 
         if final_pred == "BENIGN":
+
             residual_memory.append(residual)
 
     hybrid_preds = np.array(hybrid_preds)
