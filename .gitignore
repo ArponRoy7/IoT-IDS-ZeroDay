@@ -50,3 +50,4 @@ plots/
 models/
 *.pkl
 *.pth
+scenarios/
