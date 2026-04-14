@@ -51,3 +51,4 @@ models/
 *.pkl
 *.pth
 scenarios/
+dataset_2_scenario/
