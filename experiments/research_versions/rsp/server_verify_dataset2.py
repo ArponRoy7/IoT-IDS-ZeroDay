@@ -1,5 +1,5 @@
 # =========================================================
-# HIGH-CAPACITY EDGE INFERENCE (Raspberry Pi 5 Optimized)
+# 16GB EDGE INFERENCE (99% BENIGN TARGET / ANOMALY-FIRST)
 # =========================================================
 
 import os
@@ -22,11 +22,12 @@ warnings.filterwarnings("ignore")
 
 BASE_DIR = "scenarios_ciciot_pi"
 
-# 🔥 PARAMETERS: Synchronized with High-Capacity Training Strategy
-THRESHOLD_PERCENTILE = 95.0  # 🚀 Increased sensitivity to catch botnets
-ALPHA_BENIGN = 0.99          # 🚀 Corrected threshold for cascaded override
-ALPHA_ATTACK = 0.85
-BATCH_SIZE = 1024            # 🚀 Optimized for Pi-5 RAM stability with larger models
+# =========================================================
+# 🔥 HYPERPARAMETERS: OPTIMIZED FOR 16GB PI & 150-TREE RF
+# =========================================================
+THRESHOLD_PERCENTILE = 99.7  # 🚀 Protects Benign recall by only overriding top 0.3%
+ALPHA_BENIGN = 0.95          # 🚀 Trusts the 150-tree RF when 95% confident
+BATCH_SIZE = 1024            # Optimized for Pi RAM stability
 
 device = torch.device("cpu")
 
@@ -59,11 +60,10 @@ total_flows = 0
 
 total_size, dae_size, rf_size, param_count = 0, 0, 0, 0
 
-# Ensure the scenario directory exists before starting
 if not os.path.exists(BASE_DIR):
     raise FileNotFoundError(f"Missing '{BASE_DIR}'. Run the Training Script first!")
 
-print("\n===== EDGE GATEWAY HIGH-CAPACITY VERIFICATION =====\n")
+print("\n===== EDGE GATEWAY HIGH-FIDELITY VERIFICATION =====\n")
 
 # Baseline CPU tracking
 process.cpu_percent(interval=None)
@@ -75,7 +75,6 @@ for idx, attack in enumerate(attack_list):
     print(f"\n🚀 Running edge inference: {attack}")
     path = os.path.join(BASE_DIR, attack)
     
-    # Track hardware storage footprint for the first scenario
     if idx == 0:
         scaler_size = get_file_size_mb(f"{path}/scaler.pkl")
         rf_size = get_file_size_mb(f"{path}/rf.pkl")
@@ -86,7 +85,6 @@ for idx, attack in enumerate(attack_list):
     rf = joblib.load(f"{path}/rf.pkl")
     memory = deque(np.load(f"{path}/memory.npy"), maxlen=100000)
 
-    # Load test data and ensure correct column ordering
     df = pd.read_csv(f"{path}/test.csv")
     df = df[[col for col in df.columns if col != "Label"] + ["Label"]]
 
@@ -117,37 +115,40 @@ for idx, attack in enumerate(attack_list):
             recon, _ = dae(x_tensor)
             residuals = torch.mean((recon - x_tensor) ** 2, dim=1).numpy()
 
-        # 2. Vectorized Rolling Variance (Temporal Instability Signal)
-        combined_res = np.concatenate([last_24_residuals, residuals]) if last_24_residuals else residuals
+        # 2. Vectorized Rolling Variance
+        if len(last_24_residuals) > 0: 
+            combined_res = np.concatenate([last_24_residuals, residuals])
+        else:
+            combined_res = residuals
+            
         variances = pd.Series(combined_res).rolling(window=25, min_periods=1).var(ddof=1).fillna(0.0).values
-        if last_24_residuals: 
+        if len(last_24_residuals) > 0: 
             variances = variances[len(last_24_residuals):]
             
         last_24_residuals = residuals[-24:] 
 
-        # 3. RF Classification with Dual-Residual Features
+        # 3. RF Classification
         x_aug = np.hstack([x, residuals.reshape(-1, 1), variances.reshape(-1, 1)])
         rf_preds = rf.predict(x_aug)
         rf_probs = rf.predict_proba(x_aug).max(axis=1)
 
-        # 4. High-Capacity Cascaded Logic
+        # 4. 🔥 UPDATED HYBRID LOGIC
         threshold = np.percentile(memory, THRESHOLD_PERCENTILE)
         final_preds = np.copy(rf_preds)
         
         over_thresh = residuals > threshold
-        mask_benign = (rf_preds == "BENIGN") & (rf_probs < ALPHA_BENIGN)
-        mask_attack = (rf_preds != "BENIGN") & (rf_probs < ALPHA_ATTACK)
+        # Condition: trust the RF more to keep Benign recall high
+        is_confident_benign = (rf_preds == "BENIGN") & (rf_probs >= ALPHA_BENIGN)
         
-        # Override RF decision if structural anomaly is high and confidence is insufficient
-        final_preds[over_thresh & (mask_benign | mask_attack)] = "ZERO_DAY"
+        # Override to ZERO_DAY only if structural anomaly is clear AND RF is unsure
+        final_preds[over_thresh & ~is_confident_benign] = "ZERO_DAY"
 
-        # Update sliding window memory (Feedback loop)
+        # Update sliding window
         memory.extend(residuals[final_preds == "BENIGN"])
             
         y_pred.extend(final_preds)
         y_true.extend(true_labels)
 
-        # Latency tracking in microseconds
         batch_latency = (time.perf_counter() - start) * 1e6
         all_latencies.extend([batch_latency / len(batch_df)] * len(batch_df))
         total_flows += len(batch_df)
@@ -155,7 +156,6 @@ for idx, attack in enumerate(attack_list):
         ram = process.memory_info().rss / 1024**2
         peak_ram = max(peak_ram, ram)
 
-        # 🚀 Aggressive memory management for the Pi
         del batch_df, samples, x, x_tensor, recon, variances, x_aug
         gc.collect()
 
@@ -167,7 +167,7 @@ for idx, attack in enumerate(attack_list):
 
     print(f"⏱️ Finished in {round(time.time()-start_total,2)}s | Zero-Day: {round(z_recall*100,2)}% | Benign: {round(b_recall*100,2)}%")
 
-# Final Hardware Sustainability Summary
+# Final hardware results for LaTeX table
 avg_cpu = process.cpu_percent(interval=None)
 avg_latency = np.mean(all_latencies)
 throughput = 1e6 / avg_latency if avg_latency > 0 else 0

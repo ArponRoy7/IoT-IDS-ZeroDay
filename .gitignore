@@ -52,3 +52,4 @@ models/
 *.pth
 scenarios/
 dataset_2_scenario/
+scenarios_ciciot_pi/
